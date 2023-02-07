@@ -5,6 +5,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"go_extend/taildir/matcher"
 	"go_extend/taildir/ratelimiter"
+	"go_extend/taildir/watch"
 	"gopkg.in/tomb.v1"
 	"os"
 	"path"
@@ -36,6 +37,7 @@ type Config struct {
 	RateLimiter     *ratelimiter.LeakyBucket
 	// 日志记录器,若禁用日志记录，设置为DiscardingLogger
 	Logger logger
+	Pool   bool // 轮询模式
 }
 
 // TailD 对目录的tail
@@ -47,7 +49,7 @@ type TailD struct {
 
 	tails map[string]*Tail
 
-	watch *fsnotify.Watcher
+	watch watch.FileWatcher
 	dead  error // 致命错误，拉都拉不起来时，err不为nil
 	lk    sync.RWMutex
 	tomb  tomb.Tomb
@@ -72,7 +74,7 @@ func (d *TailD) watchDirSync() {
 	// 首次建立目录监听，拉起已经存在且符合条件的文件tailF
 	for _, entry := range dir {
 		if !entry.IsDir() && d.FilenameMatcher.Match(entry.Name()) {
-			_, err := d.TailF(path.Join(d.Dirname, entry.Name()))
+			_, err := d.TailF(entry.Name())
 			if err != nil {
 				// todo: 统一发送错误方法
 				d.Errors <- err
@@ -80,7 +82,7 @@ func (d *TailD) watchDirSync() {
 			}
 		}
 	}
-	// 触发create文件时，拉起新的tail
+	// 触发create文件时，拉起新的tailF
 	for {
 		select {
 		case <-d.tomb.Dying():
@@ -116,11 +118,12 @@ func (d *TailD) closeFiles() {
 }
 
 func (d *TailD) TailF(filename string) (*Tail, error) {
-	tail, err := TailF(filename)
+	pathF := path.Join(d.Dirname, filename)
+	tail, err := TailF(pathF)
 	if err != nil {
 		return nil, err
 	}
-	d.tails[filename] = tail
+	d.tails[pathF] = tail
 	return tail, nil
 }
 
