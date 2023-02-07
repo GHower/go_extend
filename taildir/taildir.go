@@ -2,10 +2,13 @@ package taildir
 
 import (
 	"errors"
-	"github.com/nxadm/tail/ratelimiter"
+	"github.com/fsnotify/fsnotify"
 	"go_extend/taildir/matcher"
+	"go_extend/taildir/ratelimiter"
 	"gopkg.in/tomb.v1"
 	"os"
+	"path"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -44,25 +47,32 @@ type TailD struct {
 
 	tails map[string]*Tail
 
-	dead error // 致命错误，拉都拉不起来时，err不为nil
-	lk   sync.RWMutex
-	tomb tomb.Tomb
+	watch *fsnotify.Watcher
+	dead  error // 致命错误，拉都拉不起来时，err不为nil
+	lk    sync.RWMutex
+	tomb  tomb.Tomb
 }
 
 // 1. 为符合条件的新增文件建立监听
 // 2. 为已存在文件建立监听
-func (d *TailD) watchFileSync() {
-	defer d.tomb.Done()
-	defer d.close()
+func (d *TailD) watchDirSync() {
+	//defer d.close()
 
 	dir, err := os.ReadDir(d.Dirname)
 	if err != nil {
 		d.dead = errStop
 		return
 	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		d.dead = errStop
+		return
+	}
+	d.watch = watcher
+	// 首次建立目录监听，拉起已经存在且符合条件的文件tailF
 	for _, entry := range dir {
 		if !entry.IsDir() && d.FilenameMatcher.Match(entry.Name()) {
-			f, err := TailF(entry.Name())
+			_, err := d.TailF(path.Join(d.Dirname, entry.Name()))
 			if err != nil {
 				// todo: 统一发送错误方法
 				d.Errors <- err
@@ -72,7 +82,11 @@ func (d *TailD) watchFileSync() {
 	}
 	// 触发create文件时，拉起新的tail
 	for {
-		select {}
+		select {
+		case <-d.tomb.Dying():
+			d.dead = errStop
+			return
+		}
 	}
 }
 
@@ -87,7 +101,8 @@ func (d *TailD) Err() (reason error) {
 // 1. 关闭lines管道
 // 2. 关闭它所打开的文件
 func (d *TailD) close() {
-	close(d.Lines)
+	//close(d.Lines)
+	d.tomb.Done()
 	d.closeFiles()
 }
 
@@ -98,6 +113,15 @@ func (d *TailD) closeFiles() {
 			tail.file = nil
 		}
 	}
+}
+
+func (d *TailD) TailF(filename string) (*Tail, error) {
+	tail, err := TailF(filename)
+	if err != nil {
+		return nil, err
+	}
+	d.tails[filename] = tail
+	return tail, nil
 }
 
 type Line struct {
@@ -126,19 +150,25 @@ type SeekInfo struct {
 
 func TailDir(dirname string, config Config) (*TailD, error) {
 	t := &TailD{
-		Dirname: dirname,
-		Config:  config,
+		Dirname: filepath.Clean(dirname),
 		tails:   make(map[string]*Tail),
 	}
-	if t.LineBufferSize == 0 {
-		t.LineBufferSize = 1000
+
+	if config.FilenameMatcher == nil {
+		config.FilenameMatcher = matcher.NewFileSufMatcher()
 	}
-	if t.ErrorBufferSize == 0 {
-		t.ErrorBufferSize = 10
+	if config.LineBufferSize == 0 {
+		config.LineBufferSize = 1000
 	}
+	if config.ErrorBufferSize == 0 {
+		config.ErrorBufferSize = 10
+	}
+
+	t.Config = config
+
 	t.Lines = make(chan *Line, t.LineBufferSize)
 	t.Errors = make(chan error, t.ErrorBufferSize)
 	// 自动监听目录下符合文件名规则的文件
-	go t.watchFileSync()
+	go t.watchDirSync()
 	return t, nil
 }

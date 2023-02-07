@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"gopkg.in/tomb.v1"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -20,11 +21,7 @@ type Tail struct {
 
 func TailF(filename string) (*Tail, error) {
 	tail := &Tail{
-		Filename: filename,
-		file:     nil,
-		reader:   nil,
-		Tomb:     tomb.Tomb{},
-		lk:       sync.RWMutex{},
+		Filename: filepath.Clean(filename),
 	}
 	return tail, nil
 }
