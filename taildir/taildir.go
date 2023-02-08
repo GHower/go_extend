@@ -2,7 +2,6 @@ package taildir
 
 import (
 	"errors"
-	"github.com/fsnotify/fsnotify"
 	"go_extend/taildir/matcher"
 	"go_extend/taildir/ratelimiter"
 	"go_extend/taildir/watch"
@@ -65,12 +64,12 @@ func (d *TailD) watchDirSync() {
 		d.dead = errStop
 		return
 	}
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		d.dead = errStop
-		return
-	}
-	d.watch = watcher
+	//watcher, err := fsnotify.NewWatcher()
+	//if err != nil {
+	//	d.dead = errStop
+	//	return
+	//}
+	d.watch = watch.NewInotifyFileWatcher()
 	// 首次建立目录监听，拉起已经存在且符合条件的文件tailF
 	for _, entry := range dir {
 		if !entry.IsDir() && d.FilenameMatcher.Match(entry.Name()) {
