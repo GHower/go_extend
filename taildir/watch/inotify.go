@@ -1,7 +1,6 @@
 package watch
 
 import (
-	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/nxadm/tail/util"
 	"gopkg.in/tomb.v1"
@@ -11,57 +10,25 @@ import (
 
 // InotifyFileWatcher uses inotify to monitor file changes.
 type InotifyFileWatcher struct {
-	Filename string
-	Size     int64
+	Dirname string
+	Size    int64
 }
 
+func NewInotifyDirWatcher(filename string) *InotifyFileWatcher {
+	fw := &InotifyFileWatcher{filepath.Clean(filename), 0}
+	return fw
+}
 func NewInotifyFileWatcher(filename string) *InotifyFileWatcher {
 	fw := &InotifyFileWatcher{filepath.Clean(filename), 0}
 	return fw
 }
 
 func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
-	err := WatchCreate(fw.Filename)
-	if err != nil {
-		return err
-	}
-	defer RemoveWatchCreate(fw.Filename)
-
-	// Do a real check now as the file might have been created before
-	// calling `WatchFlags` above.
-	if _, err = os.Stat(fw.Filename); !os.IsNotExist(err) {
-		// file exists, or stat returned an error.
-		return err
-	}
-
-	events := Events(fw.Filename)
-
-	for {
-		select {
-		case evt, ok := <-events:
-			if !ok {
-				return fmt.Errorf("inotify watcher has been closed")
-			}
-			evtName, err := filepath.Abs(evt.Name)
-			if err != nil {
-				return err
-			}
-			fwFilename, err := filepath.Abs(fw.Filename)
-			if err != nil {
-				return err
-			}
-			if evtName == fwFilename {
-				return nil
-			}
-		case <-t.Dying():
-			return tomb.ErrDying
-		}
-	}
-	panic("unreachable")
+	return nil
 }
 
 func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChanges, error) {
-	err := Watch(fw.Filename)
+	err := Watch(fw.Dirname)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +38,7 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 
 	go func() {
 
-		events := Events(fw.Filename)
+		events := Events(fw.Dirname)
 
 		for {
 			prevSize := fw.Size
@@ -82,20 +49,24 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 			select {
 			case evt, ok = <-events:
 				if !ok {
-					RemoveWatch(fw.Filename)
+					RemoveWatch(fw.Dirname)
 					return
 				}
 			case <-t.Dying():
-				RemoveWatch(fw.Filename)
+				RemoveWatch(fw.Dirname)
 				return
 			}
 
 			switch {
+			case evt.Op&fsnotify.Create == fsnotify.Create:
+				changes.NotifyCreated()
+				return
+
 			case evt.Op&fsnotify.Remove == fsnotify.Remove:
 				fallthrough
 
 			case evt.Op&fsnotify.Rename == fsnotify.Rename:
-				RemoveWatch(fw.Filename)
+				RemoveWatch(fw.Dirname)
 				changes.NotifyDeleted()
 				return
 
@@ -104,15 +75,15 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, pos int64) (*FileChange
 				fallthrough
 
 			case evt.Op&fsnotify.Write == fsnotify.Write:
-				fi, err := os.Stat(fw.Filename)
+				fi, err := os.Stat(fw.Dirname)
 				if err != nil {
 					if os.IsNotExist(err) {
-						RemoveWatch(fw.Filename)
+						RemoveWatch(fw.Dirname)
 						changes.NotifyDeleted()
 						return
 					}
 					// XXX: report this error back to the user
-					util.Fatal("Failed to stat file %v: %v", fw.Filename, err)
+					util.Fatal("Failed to stat file %v: %v", fw.Dirname, err)
 				}
 				fw.Size = fi.Size()
 

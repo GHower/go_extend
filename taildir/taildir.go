@@ -69,7 +69,7 @@ func (d *TailD) watchDirSync() {
 	//	d.dead = errStop
 	//	return
 	//}
-	d.watch = watch.NewInotifyFileWatcher()
+	d.watch = watch.NewInotifyDirWatcher()
 	// 首次建立目录监听，拉起已经存在且符合条件的文件tailF
 	for _, entry := range dir {
 		if !entry.IsDir() && d.FilenameMatcher.Match(entry.Name()) {
