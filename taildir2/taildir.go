@@ -6,8 +6,6 @@ import (
 	"go_extend/taildir/ratelimiter"
 	"go_extend/taildir/watch"
 	"gopkg.in/tomb.v1"
-	"os"
-	"path"
 	"path/filepath"
 	"sync"
 	"time"
@@ -30,9 +28,11 @@ type logger interface {
 }
 
 type Config struct {
-	LineBufferSize  uint // 行缓冲大小
-	ErrorBufferSize uint // 非致命错误缓冲大小
-	FilenameMatcher matcher.Matcher
+	LineBufferSize  uint            // 行缓冲大小，可选
+	ErrorBufferSize uint            // 非致命错误缓冲大小,可选
+	FilenameMatcher matcher.Matcher // 文件名匹配器,可选
+	FileLineMatcher matcher.Matcher // 文件行内容匹配器,可选
+	LineProcesSync  LineProcesser   // 行结果异步处理方法,内部自动开协程执行
 	RateLimiter     *ratelimiter.LeakyBucket
 	// 日志记录器,若禁用日志记录，设置为DiscardingLogger
 	Logger logger
@@ -42,11 +42,11 @@ type Config struct {
 // TailD 对目录的tail
 type TailD struct {
 	Dirname string
-	Lines   chan *Line
 	Errors  chan error
 	Config
 
 	tails map[string]*Tail
+	lines chan *Line
 
 	watch watch.FileWatcher
 	dead  error // 致命错误，拉都拉不起来时，err不为nil
@@ -57,73 +57,23 @@ type TailD struct {
 // 1. 为符合条件的新增文件建立监听
 // 2. 为已存在文件建立监听
 func (d *TailD) watchDirSync() {
-	//defer d.close()
-
-	dir, err := os.ReadDir(d.Dirname)
-	if err != nil {
-		d.dead = errStop
-		return
-	}
-	//watcher, err := fsnotify.NewWatcher()
-	//if err != nil {
-	//	d.dead = errStop
-	//	return
-	//}
-	d.watch = watch.NewInotifyDirWatcher(d.Dirname)
-	// 首次建立目录监听，拉起已经存在且符合条件的文件tailF
-	for _, entry := range dir {
-		if !entry.IsDir() && d.FilenameMatcher.Match(entry.Name()) {
-			_, err := d.TailF(entry.Name())
-			if err != nil {
-				// todo: 统一发送错误方法
-				d.Errors <- err
-				continue
-			}
-		}
-	}
-	// 触发create文件时，拉起新的tailF
-	for {
-		select {
-		case <-d.tomb.Dying():
-			d.dead = errStop
-			return
-		}
-	}
 }
 
 func (d *TailD) Err() (reason error) {
-	d.lk.Lock()
-	reason = d.dead
-	d.lk.Unlock()
-	return
+	return nil
 }
 
 // 对tailDir的关闭
 // 1. 关闭lines管道
 // 2. 关闭它所打开的文件
 func (d *TailD) close() {
-	//close(d.Lines)
-	d.tomb.Done()
-	d.closeFiles()
 }
 
 func (d *TailD) closeFiles() {
-	for _, tail := range d.tails {
-		if tail.file != nil {
-			tail.file.Close()
-			tail.file = nil
-		}
-	}
 }
 
 func (d *TailD) TailF(filename string) (*Tail, error) {
-	pathF := path.Join(d.Dirname, filename)
-	tail, err := TailF(pathF)
-	if err != nil {
-		return nil, err
-	}
-	d.tails[pathF] = tail
-	return tail, nil
+	return nil, nil
 }
 
 type Line struct {
@@ -168,7 +118,7 @@ func TailDir(dirname string, config Config) (*TailD, error) {
 
 	t.Config = config
 
-	t.Lines = make(chan *Line, t.LineBufferSize)
+	t.lines = make(chan *Line, t.LineBufferSize)
 	t.Errors = make(chan error, t.ErrorBufferSize)
 	// 自动监听目录下符合文件名规则的文件
 	go t.watchDirSync()
